@@ -9,10 +9,13 @@
 
 // ====[ INCLUDES ]====================================================
 #include <sourcemod>
+#include <f2stocks>
 #include <tf2_stocks>
 #include <sdkhooks>
 #include <morecolors>
 #include <ripext>
+#include <kvizzle>
+#include <smlib>
 // ====[ CONSTANTS ]===================================================
 #define PL_VERSION "3.0.9"
 #define MAXARENAS 63
@@ -20,11 +23,94 @@
 #define HUDFADEOUTTIME 120.0
 #define MAPCONFIGFILE "configs/mgemod_spawns.cfg"
 
+#define ITEMS_TXT_PATH "scripts/items/items_game.txt"
+#define MAXWEAPONS 2048
+#define MAXWEPSLOTS 5
+#define MAXWEPNAMELEN 72
+#define MAXITEMCLASSLEN 64
+
 #pragma newdecls required
 
 char serverHost[] = "147.79.75.45";
 char serverPort[] = "3000";
 ArrayList g_ArenaLogs[MAXARENAS];
+
+// F2's Weapon Info Importer
+KeyValues g_kvPrefabs = null;
+KeyValues g_kvItems = null;
+
+ArrayList g_hAllWeaponsName = null; // names of all weapons saved in an Array
+int g_iAllWeaponsDefid[MAXWEAPONS]; // defids of all weapons
+int g_iAllWeaponsHealingOnHit[MAXWEAPONS];
+bool g_bAllWeaponsPostHumousDamage[MAXWEAPONS];
+int g_iAllWeaponsCount = 0;
+
+int g_iSlotWeaponDefid[MAXWEAPONS];
+int g_iSlotWeaponSlot[MAXWEAPONS]; // translates defid -> weapon slot
+int g_iSlotWeaponCount = 0;
+
+bool g_bWeaponDataInitialized = false;
+
+bool g_bIsPaused;
+bool g_bBlockLog = false;
+char g_sBlockLog[64];
+
+char lastWeaponDamage[MAXPLAYERS+1][MAXWEPNAMELEN];
+char lastPostHumousWeaponDamage[MAXPLAYERS+1][MAXWEPNAMELEN]; 
+float lastPostHumousWeaponDamageTime[MAXPLAYERS+1]; 
+int lastHealth[MAXPLAYERS+1];
+int lastHealingOnHit[MAXPLAYERS+1]; 
+bool lastHeadshot[MAXPLAYERS+1]; 
+bool lastAirshot[MAXPLAYERS+1]; 
+int lastAirshotHeight[MAXPLAYERS+1];
+int medpackHealAmount[MAXPLAYERS+1];
+float g_fPauseStartTime;
+char g_sTauntNames[][] = { "", "taunt_scout", "taunt_sniper", "taunt_soldier", "taunt_demoman", "taunt_medic", "taunt_heavy", "taunt_pyro", "taunt_spy", "taunt_engineer" };
+
+Handle g_hTimerMatchStarted = null;
+ConVar g_hCvarLogsTitle = null;
+ConVar g_hCvarHostname = null,
+	g_hCvarRedTeamName = null,
+	g_hCvarBlueTeamName = null;
+
+
+// ---- ACCURACY ----
+ConVar g_hCvarEnableAccuracy = null;
+bool g_bEnableAccuracy = true;
+
+int g_iIgnoreDamageEnt[5];
+float g_fLastHitscanHit[MAXPLAYERS+1];
+
+const MAXROCKETS = 5;
+int g_iRocketCreatedEntity[MAXROCKETS];
+float g_fRocketCreatedTime[MAXROCKETS];
+int g_iRocketCreatedNext = 0;
+
+const float MAXROCKETJUMPTIME = 0.15;
+bool g_bRocketHurtMe[MAXPLAYERS+1];
+bool g_bRocketHurtEnemy[MAXPLAYERS+1];
+char g_sRocketFiredLogLine[MAXPLAYERS+1][1024];
+
+const float MAXHITSCANTIME = 0.05;
+bool g_bHitscanHurtEnemy[MAXPLAYERS+1];
+char g_sHitscanFiredLogLine[MAXPLAYERS+1][1024];
+
+const MAXSTICKIES = 14;
+bool g_bStickyHurtMe[MAXPLAYERS+1][MAXSTICKIES];
+bool g_bStickyHurtEnemy[MAXPLAYERS+1][MAXSTICKIES];
+int g_iStickyId[MAXPLAYERS+1][MAXSTICKIES];
+
+const SHOT_PROJECTILE_MIN = 0; // inclusive
+const SHOT_ROCKET = 0;
+const SHOT_NEEDLE = 1;
+const SHOT_HEALINGBOLT = 2;
+const SHOT_PIPE = 3;
+const SHOT_STICKY = 4;
+const SHOT_PROJECTILE_MAX = 8; // exclusive
+const SHOT_HITSCAN_MIN = 16; // inclusive
+const SHOT_HITSCAN = 16;
+const SHOT_HITSCAN_MAX = 32; // exclusive
+StringMap g_tShotTypes = null;
 // arena slots
 enum
 {
@@ -196,7 +282,9 @@ int
     g_iBBallHoop            [MAXARENAS + 1][3],
     g_iBBallIntel           [MAXARENAS + 1],
     g_iArenaEarlyLeave      [MAXARENAS + 1],
-    g_iELOMenuPage          [MAXARENAS + 1];
+    g_iELOMenuPage          [MAXARENAS + 1],
+    g_iArenaTimes           [MAXARENAS + 1][2];
+
 
 //int g_tfctArenaAllowedClasses[MAXARENAS + 1][TFClassType+1];
 bool g_tfctArenaAllowedClasses[MAXARENAS + 1][10];
@@ -436,15 +524,61 @@ public void OnPluginStart()
     //(Websocket)
     ws = new WebSocket("ws://147.79.75.45:3000");
     ws.Connect();
-    ws.WriteString("Did we connect?");
     ws.SetReadCallback(WebSocket_JSON, wsReadCallback);
     ws.SetConnectCallback(wsConnCallback);
     ws.SetDisconnectCallback(wsDisconnectCallback);
 
     for (int i = 0; i < MAXARENAS; i++)
     {
-        g_ArenaLogs[i] = new ArrayList(256);
+        g_ArenaLogs[i] = new ArrayList(512);
     }
+    	g_tShotTypes = CreateTrie();
+	g_tShotTypes.SetValue("tf_weapon_rocketlauncher", SHOT_ROCKET);
+	g_tShotTypes.SetValue("tf_weapon_particle_cannon", SHOT_ROCKET);
+	g_tShotTypes.SetValue("tf_weapon_rocketlauncher_directhit", SHOT_ROCKET);
+	g_tShotTypes.SetValue("tf_projectile_rocket", SHOT_ROCKET);
+	g_tShotTypes.SetValue("tf_projectile_energy_ball", SHOT_ROCKET);
+	
+	g_tShotTypes.SetValue("tf_weapon_grenadelauncher", SHOT_PIPE);
+	g_tShotTypes.SetValue("tf_projectile_pipe", SHOT_PIPE);
+	//g_tShotTypes.SetValue("tf_weapon_pipebomblauncher", SHOT_STICKY); // Should NOT be added.. causes a bug in OnEntityDestroyed
+	g_tShotTypes.SetValue("tf_projectile_pipe_remote", SHOT_STICKY);
+	
+	g_tShotTypes.SetValue("tf_weapon_syringegun_medic", SHOT_NEEDLE);
+	g_tShotTypes.SetValue("tf_weapon_crossbow", SHOT_HEALINGBOLT);
+	g_tShotTypes.SetValue("tf_projectile_healing_bolt", SHOT_HEALINGBOLT);
+	
+	g_tShotTypes.SetValue("tf_weapon_scattergun", SHOT_HITSCAN);
+	g_tShotTypes.SetValue("tf_weapon_shotgun_soldier", SHOT_HITSCAN);
+	g_tShotTypes.SetValue("tf_weapon_shotgun_primary", SHOT_HITSCAN);
+	g_tShotTypes.SetValue("tf_weapon_shotgun_hwg", SHOT_HITSCAN);
+	g_tShotTypes.SetValue("tf_weapon_shotgun_pyro", SHOT_HITSCAN);
+	g_tShotTypes.SetValue("tf_weapon_pistol_scout", SHOT_HITSCAN);
+	g_tShotTypes.SetValue("tf_weapon_pistol", SHOT_HITSCAN);
+	g_tShotTypes.SetValue("tf_weapon_smg", SHOT_HITSCAN);
+	g_tShotTypes.SetValue("tf_weapon_sniperrifle", SHOT_HITSCAN);
+	g_tShotTypes.SetValue("tf_weapon_revolver", SHOT_HITSCAN);
+	
+	g_hCvarEnableAccuracy = CreateConVar("supstats_accuracy", "1", "Enable accuracy logs");
+	// HookConVarChange(g_hCvarEnableAccuracy, CvarChange_EnableAccuracy);
+	// char cvarEnableAccuracy[16];
+	// g_hCvarEnableAccuracy.GetString(cvarEnableAccuracy, sizeof(cvarEnableAccuracy));
+	// CvarChange_EnableAccuracy(g_hCvarEnableAccuracy, cvarEnableAccuracy, cvarEnableAccuracy);
+
+	// The "logstf_" prefix is used because we are reusing the cvar from the logstf plugin.
+	// This is done to avoid having all servers defining the title format twice.
+	g_hCvarLogsTitle = CreateConVar("logstf_title", "{server}: {blu} vs {red}", "Title for the log", FCVAR_NONE);
+	g_hCvarHostname = FindConVar("hostname");
+	g_hCvarRedTeamName = FindConVar("mp_tournament_redteamname");
+	g_hCvarBlueTeamName = FindConVar("mp_tournament_blueteamname");
+	
+	char map[128];
+	GetCurrentMap(map, sizeof(map));
+	LogToGame("Loading map \"%s\"", map);
+
+	g_fPauseStartTime = GetEngineTime(); // Just in case it is already paused
+
+	ImportWeaponDefinitions();
 }
 
 public void OnConfigsExecuted()
@@ -510,6 +644,7 @@ public void OnMapStart()
             LogMessage("AutoCvar: Setting mp_autoteambalance 0, mp_teams_unbalance_limit 32, & mp_tournament 0");
         }
 
+        //HookEvent("player_changeclass", Event_PlayerChangeClass, EventHookMode_Pre);
         HookEvent("player_death", Event_PlayerDeath, EventHookMode_Pre);
         HookEvent("player_spawn", Event_PlayerSpawn, EventHookMode_Post);
         HookEvent("player_hurt", Event_PlayerHurt, EventHookMode_Pre);
@@ -621,6 +756,11 @@ public void OnClientPostAdminCheck(int client)
     }
     else
     {
+        char steamid_dirty[31]; 
+        if (!GetClientAuthId(client, AuthId_Steam2, steamid_dirty, sizeof(steamid_dirty)))
+        {
+            LogError("Could not get steam id for client %d", client);
+        }
         ChangeClientTeam(client, TEAM_SPEC);
         CreateTimer(5.0, Timer_ShowAdv, GetClientUserId(client)); /* Show advice to type !add in chat */
         g_bHitBlip[client] = false;
@@ -630,8 +770,7 @@ public void OnClientPostAdminCheck(int client)
 
         if (!g_bNoStats)
         {
-            char steamid_dirty[31], steamid[64], query[256];
-            GetClientAuthId(client, AuthId_Steam2, steamid_dirty, sizeof(steamid_dirty));
+            char steamid[64], query[256];
             db.Escape(steamid_dirty, steamid, sizeof(steamid));
             strcopy(g_sPlayerSteamID[client], 32, steamid);
             Format(query, sizeof(query), "SELECT rating, hitblip, wins, losses FROM mgemod_stats WHERE steamid='%s' LIMIT 1", steamid);
@@ -642,6 +781,7 @@ public void OnClientPostAdminCheck(int client)
     SDKHook(client, SDKHook_OnTakeDamage, OnTakeDamage);
 }
 
+
 /* OnClientDisconnect(client)
 *
 * When a client disconnects from the server.
@@ -650,7 +790,7 @@ public void OnClientPostAdminCheck(int client)
 public void OnClientDisconnect(int client)
 {
     // We ignore the kick queue check for this function only so that clients that get kicked still get their elo calculated
-    if (IsValidClient(client, true) && g_iPlayerArena[client])
+    if (IsValidClient(client) && g_iPlayerArena[client])
     {
         RemoveFromQueue(client, true);
     }
@@ -1011,7 +1151,7 @@ public void OnGameFrame()
  *
  * When a client takes damage.
  * -------------------------------------------------------------------------- */
-Action OnTakeDamage(int victim, int &attacker, int &inflictor, float &damage, int &damagetype)
+/*Action OnTakeDamage(int victim, int &attacker, int &inflictor, float &damage, int &damagetype)
 {
     if (!IsValidClient(victim) || !IsValidClient(attacker))
         return Plugin_Continue;
@@ -1024,7 +1164,7 @@ Action OnTakeDamage(int victim, int &attacker, int &inflictor, float &damage, in
     }
 
     return Plugin_Continue;
-}
+}*/
 
 /* OnPlayerRunCmd(client, &buttons, &impulse, Float:vel[3], Float:angles[3], &weapon)
 *
@@ -1145,6 +1285,12 @@ Action OnTouchHoop(int entity, int other)
         if (fraglimit > 0 && g_iArenaScore[arena_index][client_team_slot] >= fraglimit && g_iArenaStatus[arena_index] >= AS_FIGHT && g_iArenaStatus[arena_index] < AS_REPORTED)
         {
             g_iArenaStatus[arena_index] = AS_REPORTED;
+            /*
+            L 07/26/2025 - 12:03:13: World triggered "Round_Win" (winner "Red")
+            L 07/26/2025 - 12:03:13: World triggered "Round_Length" (seconds "337.84")
+            L 07/26/2025 - 12:03:13: Team "Red" current score "3" with "9" players
+            L 07/26/2025 - 12:03:13: Team "Blue" current score "1" with "9" players
+            */
             DumpArenaLogs(arena_index);
             GetClientName(client, client_name, sizeof(client_name));
 
@@ -2626,6 +2772,7 @@ void SetPlayerToAllowedClass(int client, int arena_index)
             }
         }
     }
+    LogPlayerChangeClass(client, arena_index);
 }
 
 void ParseAllowedClasses(const char[] sList, bool[] output)
@@ -3279,6 +3426,7 @@ Action Command_JoinClass(int client, int args)
                 {
                     TF2_SetPlayerClass(client, new_class);
                     g_tfctPlayerClass[client] = new_class;
+                    LogPlayerChangeClass(client, arena_index);
                     if (IsPlayerAlive(client))
                     {
                         if ((g_iArenaStatus[arena_index] == AS_FIGHT && g_bArenaMGE[arena_index] || g_bArenaEndif[arena_index]))
@@ -3400,6 +3548,8 @@ Action Command_JoinClass(int client, int args)
                 ChangeClientTeam(client, TEAM_SPEC);
             }
         }
+
+        //LogPlayerChangeClass(client, arena_index);
     }
 
     return Plugin_Handled;
@@ -4108,6 +4258,7 @@ Action Event_PlayerHurt(Event event, const char[] name, bool dontBroadcast)
 
     if (!IsValidClient(victim))
         return Plugin_Continue;
+    HurtFork(event, name);
 
     int attacker = GetClientOfUserId(event.GetInt("attacker"));
     int arena_index = g_iPlayerArena[victim];
@@ -4174,12 +4325,83 @@ Action Event_PlayerHurt(Event event, const char[] name, bool dontBroadcast)
     return Plugin_Continue;
 }
 
+//Action Event_PlayerChangeClass(Event event, const char[] name, bool dontBroadcast)
+//{
+//    LogPlayerChangeClass(event);
+//
+//    return Plugin_Continue;
+//}
+
+void LogPlayerChangeClass(int player, int arena_index)
+{
+	char playerName[MAX_NAME_LENGTH];
+	char playerSteamID[64];
+	char playerTeam[32];
+
+	GetClientName(player, playerName, sizeof(playerName));
+	GetClientAuthStringNew(player, playerSteamID, sizeof(playerSteamID), false);
+	GetPlayerTeamStr(GetClientTeam(player), playerTeam, sizeof(playerTeam));
+
+    char playerClass[128];
+
+    switch (g_tfctPlayerClass[player])
+    {
+        case TFClass_Scout:
+        {
+            playerClass = "scout";
+        }
+        case TFClass_Sniper:
+        {
+            playerClass = "sniper";
+        }
+        case TFClass_Soldier:
+        {
+            playerClass = "soldier";
+        }
+        case TFClass_DemoMan:
+        {
+            playerClass = "demoman";
+        }
+        case TFClass_Medic:
+        {
+            playerClass = "medic";
+        }
+        case TFClass_Heavy:
+        {
+            playerClass = "heavyweapons";
+        }
+        case TFClass_Pyro:
+        {
+            playerClass = "pyro";
+        }
+        case TFClass_Spy:
+        {
+            playerClass = "spy";
+        }
+        case TFClass_Engineer:
+        {
+            playerClass = "engineer";
+        }
+        case TFClass_Unknown:
+        {
+            playerClass = "undefined";
+        }
+    }
+
+    char log[256];
+
+    Format(log, sizeof(log),
+        "\"%s<%d><%s><%s>\" changed role to \"%s\"",
+        playerName, player, playerSteamID, playerTeam, playerClass
+    );
+    LogToArena(arena_index, log);
+}
+
 Action Event_PlayerDeath(Event event, const char[] name, bool dontBroadcast)
 {
     int victim = GetClientOfUserId(event.GetInt("userid"));
     int arena_index = g_iPlayerArena[victim];
     int victim_slot = g_iPlayerSlot[victim];
-
 
     int killer_slot = (victim_slot == SLOT_ONE || victim_slot == SLOT_THREE) ? SLOT_TWO : SLOT_ONE;
     int killer = g_iArenaQueue[arena_index][killer_slot];
@@ -4196,6 +4418,7 @@ Action Event_PlayerDeath(Event event, const char[] name, bool dontBroadcast)
     {
         return Plugin_Continue;
     }
+    LogDeath(event);
 
     if (g_bFourPersonArena[arena_index])
     {
@@ -4276,6 +4499,37 @@ Action Event_PlayerDeath(Event event, const char[] name, bool dontBroadcast)
 
     if (g_iArenaStatus[arena_index] >= AS_FIGHT && g_iArenaStatus[arena_index] < AS_REPORTED && fraglimit > 0 && g_iArenaScore[arena_index][killer_team_slot] >= fraglimit)
     {
+        /*
+        L 07/26/2025 - 12:03:13: World triggered "Round_Win" (winner "Red")
+        L 07/26/2025 - 12:03:13: World triggered "Round_Length" (seconds "337.84")
+        L 07/26/2025 - 12:03:13: Team "Red" current score "3" with "9" players
+        L 07/26/2025 - 12:03:13: Team "Blue" current score "1" with "9" players
+        */
+        char round_win[256];
+        char game_over[256];
+        char round_length[256];
+        char red_score[256];
+        char blu_score[256];
+        char intermission_win_limit[256];
+        Format(round_win, sizeof(round_win), "World triggered \"Round_Win\" (winner \"%s\")", killer_team_slot ? "Red" : "Blu");
+        Format(game_over, sizeof(game_over), "World triggered \"Game_Over\" reason \"Reached Win Limit\"");
+        int seconds = GetTime() - g_iArenaTimes[arena_index][0];
+        Format(round_length, sizeof(round_length), "World triggered \"Round_Length\" (seconds \"%d\")", seconds);
+        Format(blu_score, sizeof(blu_score), "Team \"Blue\" current score \"%d\" with \"1\" players", g_iArenaScore[arena_index][2]);
+        Format(red_score, sizeof(red_score), "Team \"Red\" current score \"%d\" with \"1\" players", g_iArenaScore[arena_index][1]);
+        Format(
+            intermission_win_limit, sizeof(intermission_win_limit), 
+            "Team \"%s\" triggered \"Intermission_Win_Limit\"", 
+            (g_iArenaScore[arena_index][2] > g_iArenaScore[arena_index][1]) ? "BLUE" : "RED" 
+        );
+        LogToArena(arena_index, round_win);
+        LogToArena(arena_index, round_length);
+        LogToArena(arena_index, blu_score);
+        LogToArena(arena_index, red_score);
+        LogToArena(arena_index, game_over);
+        LogToArena(arena_index, blu_score);
+        LogToArena(arena_index, red_score);        
+        LogToArena(arena_index, intermission_win_limit);
         g_iArenaStatus[arena_index] = AS_REPORTED;
         DumpArenaLogs(arena_index);
         UpdateScoreWS(arena_index);
@@ -4417,7 +4671,6 @@ Action Event_PlayerDeath(Event event, const char[] name, bool dontBroadcast)
                 if (killer_teammate)
                     ResetPlayer(killer_teammate);
 
-                g_iArenaStatus[arena_index] = AS_FIGHT;
                 */
                 CreateTimer(0.1, Timer_NewRound, arena_index);
             }
@@ -4741,7 +4994,12 @@ Action Timer_CountDown(Handle timer, any arena_index)
                 ShowCountdownToSpec(arena_index, msg);
                 g_iArenaStatus[arena_index] = AS_COUNTDOWN;
             } else if (g_iArenaCd[arena_index] <= 0) {
+				
                 g_iArenaStatus[arena_index] = AS_FIGHT;
+                g_iArenaTimes[arena_index][0] = GetTime();
+                char log[256];
+                Format(log, sizeof(log), "World triggered \"Round_Start\"");
+                LogToArena(arena_index, log);
                 char msg[64];
                 Format(msg, sizeof(msg), "FIGHT", g_iArenaCd[arena_index]);
                 PrintCenterText(red_f1, msg);
@@ -4809,6 +5067,10 @@ Action Timer_CountDown(Handle timer, any arena_index)
                 g_iArenaStatus[arena_index] = AS_COUNTDOWN;
             } else if (g_iArenaCd[arena_index] <= 0) {
                 g_iArenaStatus[arena_index] = AS_FIGHT;
+                g_iArenaTimes[arena_index][0] = GetTime();
+                char log[256];
+                Format(log, sizeof(log), "World triggered \"Round_Start\"");
+                LogToArena(arena_index, log);
                 char msg[64];
                 Format(msg, sizeof(msg), "FIGHT", g_iArenaCd[arena_index]);
                 PrintCenterText(red_f1, msg);
@@ -5551,7 +5813,7 @@ bool TraceEntityPlayersOnly(int entity, int mask, int client)
  *
  * Checks if a client is valid.
  * -------------------------------------------------------------------------- */
-bool IsValidClient(int iClient, bool bIgnoreKickQueue = false)
+/*bool IsValidClient(int iClient, bool bIgnoreKickQueue = false)
 {
     if
     (
@@ -5572,7 +5834,7 @@ bool IsValidClient(int iClient, bool bIgnoreKickQueue = false)
         return false;
     }
     return true;
-}
+}*/
 
 /* ShootsRocketsOrPipes()
  *
@@ -5797,6 +6059,7 @@ void EndKoth(any arena_index, any winner_team)
     if (fraglimit > 0 && g_iArenaScore[arena_index][winner_team] >= fraglimit && g_iArenaStatus[arena_index] >= AS_FIGHT && g_iArenaStatus[arena_index] < AS_REPORTED)
     {
         g_iArenaStatus[arena_index] = AS_REPORTED;
+        g_iArenaTimes[arena_index][1] = GetTime();
         DumpArenaLogs(arena_index);
         char foe_name[MAX_NAME_LENGTH];
         GetClientName(foe, foe_name, sizeof(foe_name));
@@ -6123,15 +6386,15 @@ public void UpdateScoreWS(int arena_index)
 	}
 	char sP1UserId[64], sP2UserId[64];
     bool got_name = GetClientAuthId(p1, AuthId_Steam3, sP1UserId, sizeof(sP1UserId));
-    if (!got_name)
-    {
-        PrintToChatAll("Didn't get p1 steam id");
-    }
+    //if (!got_name)
+    //{
+    //    PrintToServer("Didn't get p1 steam id");
+    //}
     got_name = GetClientAuthId(p2, AuthId_Steam3, sP2UserId, sizeof(sP2UserId));
-    if (!got_name)
-    {
-        PrintToChatAll("Didn't get p2 steam id");
-    }
+    //if (!got_name)
+    //{
+    //    PrintToServer("Didn't get p2 steam id");
+    //}
 	char name[MAX_NAME_LENGTH], name2[MAX_NAME_LENGTH];
 	GetClientName(p1, name, sizeof(name));
 	GetClientName(p2, name2, sizeof(name2));
@@ -6256,34 +6519,1080 @@ public Action Timer_ConnectToMGEME(Handle timer, int data)
 	return Plugin_Continue;
 }
 
-void LogArenaEvent(int arena_index, const char attacker[64], const char victim[64], int damage)
-{
-    char log[256];
-    Format(log, 256, "%s damages %s for %d", attacker, victim, damage);
-    PrintToServer(log);
-    g_ArenaLogs[arena_index].PushString(log);
-}
-
 void DumpArenaLogs(int arenaIndex)
 {
-    char path[PLATFORM_MAX_PATH];
-    Format(path, sizeof(path), "addons/sourcemod/logs/arena_%d.txt", arenaIndex);
-
-    File file = OpenFile(path, "w");
+    char map_path[PLATFORM_MAX_PATH];
+    char arena_path[PLATFORM_MAX_PATH];
+    char log_path[PLATFORM_MAX_PATH];
+    Format(map_path, sizeof(map_path), "addons/sourcemod/logs/%s", g_sMapName);
+    Format(arena_path, sizeof(arena_path), "addons/sourcemod/logs/%s/%s", g_sMapName, g_sArenaName[arenaIndex]);
+    Format(log_path, sizeof(log_path), "addons/sourcemod/logs/%s/%s/%d.log", g_sMapName, g_sArenaName[arenaIndex], GetTime());
+    if (!DirExists(map_path))
+    {
+        CreateDirectory(map_path, 511);
+    }
+    if (!DirExists(arena_path))
+    {
+        CreateDirectory(arena_path, 511);
+    }
+    File file = OpenFile(log_path, "w");
     if (file == null)
     {
-        PrintToServer("Failed to open file: %s", path);
+        PrintToServer("Failed to open file: %s", log_path);
         return;
     }
 
     int size = g_ArenaLogs[arenaIndex].Length;
-    char entry[256];
+    char entry[512];
     for (int i = 0; i < size; i++)
     {
         g_ArenaLogs[arenaIndex].GetString(i, entry, sizeof(entry));
         file.WriteLine(entry);
     }
+    /*
+    L 07/26/2025 - 12:03:13: World triggered "Round_Win" (winner "Red")
+    L 07/26/2025 - 12:03:13: World triggered "Round_Length" (seconds "337.84")
+    L 07/26/2025 - 12:03:13: Team "Red" current score "3" with "9" players
+    L 07/26/2025 - 12:03:13: Team "Blue" current score "1" with "9" players
+    */ 
     file.Close();
 
     g_ArenaLogs[arenaIndex].Clear();
+}
+
+void LogShot(int arena_index, int attacker, const char[] weapon) {
+	// For performance, don't use FormatShot.
+	
+	int attackerid = GetClientUserId(attacker);
+	char attackerName[MAX_NAME_LENGTH];
+	char attackerSteamID[64];
+	char attackerTeam[32];
+	
+	GetClientName(attacker, attackerName, sizeof(attackerName));
+	GetClientAuthStringNew(attacker, attackerSteamID, sizeof(attackerSteamID), false);
+	GetPlayerTeamStr(GetClientTeam(attacker), attackerTeam, sizeof(attackerTeam));
+	
+    char log_line[256];
+    Format(log_line, sizeof(log_line), "\"%s<%d><%s><%s>\" triggered \"shot_fired\" (weapon \"%s\")",
+		attackerName,
+		attackerid,
+		attackerSteamID,
+		attackerTeam,
+		weapon);
+    LogToArena(arena_index, log_line);
+}
+
+void LogDeath(Event event)
+{
+    int victim = GetClientOfUserId(event.GetInt("userid"));
+    int killer = GetClientOfUserId(event.GetInt("attacker"));
+    if (killer == 0) {
+        return;
+    }
+    int arena_index = g_iPlayerArena[victim];
+
+	char attackerName[MAX_NAME_LENGTH];
+	char attackerSteamID[64];
+	char attackerTeam[32];
+	GetClientName(killer, attackerName, sizeof(attackerName));
+	GetClientAuthStringNew(killer, attackerSteamID, sizeof(attackerSteamID), false);
+	GetPlayerTeamStr(GetClientTeam(killer), attackerTeam, sizeof(attackerTeam));
+
+	char victimName[MAX_NAME_LENGTH];
+	char victimSteamID[64];
+	char victimTeam[32];
+	GetClientName(victim, victimName, sizeof(victimName));
+	GetClientAuthStringNew(victim, victimSteamID, sizeof(victimSteamID), false);
+	GetPlayerTeamStr(GetClientTeam(victim), victimTeam, sizeof(victimTeam));
+
+    char log[256];
+    float vicPos[3], attPos[3];
+    GetClientAbsOrigin(killer, attPos);
+    GetClientAbsOrigin(victim, vicPos);
+    int iVicPos[3], iAttPos[3];
+    for (int i = 0; i < 3; i++)
+    {
+        iVicPos[i] = RoundToFloor(vicPos[i]);
+        iAttPos[i] = RoundToFloor(attPos[i]);
+    }
+    Format(log, sizeof(log),
+        "\"%s<%d><%s><%s>\" killed \"%s<%d><%s><%s>\" with \"%s\" (attacker_position \"%d %d %d\") (victim_position \"%d %d %d\")",
+        attackerName, killer, attackerSteamID, attackerTeam, victimName, 
+        victim, victimSteamID, victimTeam, lastWeaponDamage[killer], iAttPos[0], iAttPos[1], iAttPos[2],
+        iVicPos[0], iVicPos[1], iVicPos[2]
+    );
+    LogToArena(arena_index, log);
+}
+
+void LogToArena(int arena_index, char log_line[256])
+{
+	char timeString[32];
+	FormatTime(timeString, sizeof(timeString), "L %m/%d/%Y - %H:%M:%S", GetTime());
+	char time_log[512];
+	Format(time_log, sizeof(time_log), "%s: %s", timeString, log_line);
+    g_ArenaLogs[arena_index].PushString(time_log);
+}
+
+void LogHit(int arena_index, int attacker, const char[] weapon) {
+	int attackerid = GetClientUserId(attacker);
+	char attackerName[MAX_NAME_LENGTH];
+	char attackerSteamID[64];
+	char attackerTeam[32];
+	
+	GetClientName(attacker, attackerName, sizeof(attackerName));
+	GetClientAuthStringNew(attacker, attackerSteamID, sizeof(attackerSteamID), false);
+	GetPlayerTeamStr(GetClientTeam(attacker), attackerTeam, sizeof(attackerTeam));
+	
+    char log_line[256];
+	Format(log_line, sizeof(log_line), "\"%s<%d><%s><%s>\" triggered \"shot_hit\" (weapon \"%s\")",
+		attackerName,
+		attackerid,
+		attackerSteamID,
+		attackerTeam,
+		weapon);
+    LogToArena(arena_index, log_line);
+}
+
+public Action OnTakeDamage(int victim, int &attacker, int &inflictor, float &damage, int &damagetype, int &weapon, float damageForce[3], float damagePosition[3], int damagecustom) {
+	bool wasDirect = g_bPlayerTakenDirectHit[victim];
+	g_bPlayerTakenDirectHit[victim] = false; // Make sure to reset it before leaving the function
+    int arena_index = g_iPlayerArena[victim];
+	
+	if (victim == attacker) {
+		if (g_bEnableAccuracy && IsRealPlayer(attacker) && inflictor > MaxClients) {
+			TFClassType cls = TF2_GetPlayerClass(attacker);
+			if (cls == TFClass_Soldier) {
+				for (int i = 0; i < MAXROCKETS; i++) {
+					if (g_iRocketCreatedEntity[i] == inflictor && g_fRocketCreatedTime[i] >= GetEngineTime() - MAXROCKETJUMPTIME) {
+						g_bRocketHurtMe[attacker] = true;
+						break;
+					}
+				}
+			} else if (cls == TFClass_DemoMan) {
+				if (inflictor > MaxClients) {
+					char entityName[32];
+					GetEntityClassname(inflictor, entityName, sizeof(entityName));
+					int shotType;
+					if (g_tShotTypes.GetValue(entityName, shotType) && shotType == SHOT_STICKY) {
+						int stickyPos = FindStickySpot(attacker, inflictor, true);
+						
+						if (stickyPos != -1) {
+							g_bStickyHurtMe[attacker][stickyPos] = true;
+						}
+					}
+				}
+			}
+		}
+		return Plugin_Continue;
+	}
+	if (!(victim > 0 && victim <= MaxClients && attacker > 0 && attacker <= MaxClients))
+		return Plugin_Continue;
+	if (!IsPlayerAlive(victim))
+		return Plugin_Continue; // Sometimes this function is triggered even for dead players.
+	
+	int attackerTeam = GetClientTeam(attacker);
+	int victimTeam = GetClientTeam(victim);
+	if (attackerTeam == victimTeam)
+		return Plugin_Continue; // The function is triggered for team mates too
+	
+	TFClassType attackerClass = TF2_GetPlayerClass(attacker);
+	lastHealingOnHit[attacker] = 0;
+	lastHealth[attacker] = GetClientHealth(attacker);
+	lastHeadshot[attacker] = false;
+	lastAirshot[attacker] = false;
+
+	lastWeaponDamage[attacker][0] = '\0';
+	
+	
+	//char strDamagetype[33], strDamagecustom[33];
+	//IntToBits(damagetype, strDamagetype);
+	//IntToBits(damagecustom, strDamagecustom);
+	//PrintToChatAll("vic(%i) att(%i) infl(%i) weap(%i) dmg(%.0f) dmgtype(%s) dmgcus(%s)", victim, attacker, inflictor, weapon, damage, strDamagetype, strDamagecustom);
+	
+	if ((damagetype & DMG_CRIT) != DMG_CRIT && ((damage >= 500.0 && (damagetype & (1 << 27)) != (1 << 27) /* not a backstab */) || (damage >= 300.0 && (damagetype & DMG_BLAST) == DMG_BLAST /* soldier equalizer taunt, perhaps others */))) {
+		strcopy(lastWeaponDamage[attacker], MAXWEPNAMELEN, g_sTauntNames[attackerClass]);
+	} else {
+		int healing; 
+		int defid;
+		bool postHumousDamage;
+		if (!GetWeaponLogName(lastWeaponDamage[attacker], MAXWEPNAMELEN, attacker, weapon, healing, defid, postHumousDamage, inflictor)) {
+			float now = GetEngineTime();
+			if (lastPostHumousWeaponDamageTime[attacker] >= now - 15.0) {
+				strcopy(lastWeaponDamage[attacker], MAXWEPNAMELEN, lastPostHumousWeaponDamage[attacker]);
+				lastPostHumousWeaponDamageTime[attacker] = now;
+				return Plugin_Continue;
+			} else {
+				strcopy(lastWeaponDamage[attacker], MAXWEPNAMELEN, "unknown");
+				return Plugin_Continue;
+			}
+		}
+		
+		if (healing > 0) {
+			if (StrEqual(lastWeaponDamage[attacker], "blackbox")) {
+				// TODO: Handle this more generic using the add_health_on_radius_damage attribute. Also, this is not perfectly precise.
+				int actualHealing = RoundToNearest(damage / 4.25);
+				if (actualHealing > healing)
+					actualHealing = healing; // The healing variable decides the maximum amount of healing
+				
+				healing = actualHealing;
+			}
+			
+			int maxHealth = GetMaxHealth(attacker);
+			if (lastHealth[attacker] < maxHealth) {
+				lastHealingOnHit[attacker] = min(maxHealth - lastHealth[attacker], healing);
+			}
+		}
+	
+		if (attackerClass == TFClass_Sniper && GetPlayerWeaponSlot(attacker, 0) == weapon) {
+			if (defid == 56 || defid == 1005) {
+				// Huntsman
+				lastHeadshot[attacker] = (damagecustom & 1) != 0;
+			} else {
+				// All other sniper rifles
+				lastHeadshot[attacker] = (damagecustom & 8) == 0;
+			}
+		} else if (defid == 61 || defid == 1006) {
+			// Ambassador
+			lastHeadshot[attacker] = (damagecustom & 1) != 0;
+		}
+		
+		if (wasDirect && (attackerClass == TFClass_Soldier || attackerClass == TFClass_DemoMan) && GetPlayerWeaponSlot(attacker, 0) == weapon) {
+			SetLastAirshotValues(attacker, victim);
+		}
+		
+		if (attackerClass == TFClass_Medic && GetPlayerWeaponSlot(attacker, 0) == weapon) {
+			if (StrEqual(lastWeaponDamage[attacker], "crusaders_crossbow")) {
+				SetLastAirshotValues(attacker, victim);
+			}
+		}
+
+		if (postHumousDamage) {
+			// Sometimes these "Post Humous Damage" weapons can do damage AFTER you die or change class (like Boston Basher, Flamethrower, etc.)
+			// Remember the weapon, and if we deal damage from an unknown weapon, then credit it to the last Post Humous Damage weapon.
+			strcopy(lastPostHumousWeaponDamage[attacker], MAXWEPNAMELEN, lastWeaponDamage[attacker]);
+			lastPostHumousWeaponDamageTime[attacker] = GetEngineTime();
+		}
+		
+		
+		// ---- ACCURACY ----
+		if (g_bEnableAccuracy) {
+			if (inflictor > MaxClients && IsValidEntity(inflictor)) {
+				// Projectile shot
+				
+				char classname[128];
+				GetEntityClassname(inflictor, classname, sizeof(classname));
+				
+				int shotType;
+				if (g_tShotTypes.GetValue(classname, shotType)) {
+					// The class checks are required to avoid pyros getting a shot_hit on a reflect rocket, without any shot_fired.
+					bool isRocket = shotType == SHOT_ROCKET && attackerClass == TFClass_Soldier;
+					bool isGrenade = shotType == SHOT_PIPE && attackerClass == TFClass_DemoMan;
+					bool isSticky = shotType == SHOT_STICKY && attackerClass == TFClass_DemoMan;
+					bool isNeedle = shotType == SHOT_NEEDLE && attackerClass == TFClass_Medic;
+					if (isRocket || isGrenade || isNeedle) {
+						bool foundIgnore = false;
+						int foundEmpty = -1;
+						if (!isNeedle) {
+							for (int i = 0; i < sizeof(g_iIgnoreDamageEnt); i++) {
+								if (g_iIgnoreDamageEnt[i] == inflictor) {
+									foundIgnore = true;
+									break;
+								}
+								
+								if (foundEmpty == -1 && g_iIgnoreDamageEnt[i] == 0)
+									foundEmpty = i;
+							}
+						}
+						
+						if (!foundIgnore) {
+							if (!isNeedle) {
+								if (foundEmpty != -1)
+										g_iIgnoreDamageEnt[foundEmpty] = inflictor;
+								else
+									LogError("Did not find empty IgnoreDamage spot (%i,%i,%i,%i,%i)", g_iIgnoreDamageEnt[0], g_iIgnoreDamageEnt[1], g_iIgnoreDamageEnt[2], g_iIgnoreDamageEnt[3], g_iIgnoreDamageEnt[4]);
+							}
+							
+							if (isRocket) {
+								g_bRocketHurtEnemy[attacker] = true;
+								LogHit(arena_index, attacker, lastWeaponDamage[attacker]);
+							} else if (isGrenade)
+								LogHit(arena_index, attacker, lastWeaponDamage[attacker]);
+							else if (isNeedle)
+								LogHit(arena_index, attacker, lastWeaponDamage[attacker]);
+						}
+					} else if (isSticky) {
+						int stickyPos = FindStickySpot(attacker, inflictor, true);
+						
+						if (stickyPos != -1) {
+							g_bStickyHurtEnemy[attacker][stickyPos] = true;
+						}
+					}
+				}
+			} else if (inflictor > 0 && inflictor <= MaxClients && IsValidEntity(weapon)) {
+				// Hitscan shot
+				
+				char classname[128];
+				GetEntityClassname(weapon, classname, sizeof(classname));
+				
+				int shotType;
+				if (g_tShotTypes.GetValue(classname, shotType) && shotType >= SHOT_HITSCAN_MIN && shotType < SHOT_HITSCAN_MAX) {
+					float now = GetEngineTime();
+					if ((now - g_fLastHitscanHit[attacker]) > 0.05) {
+						LogHit(arena_index, attacker, lastWeaponDamage[attacker]);
+						
+						g_fLastHitscanHit[attacker] = now;
+						g_bHitscanHurtEnemy[attacker] = true;
+					}
+				}
+			} else {
+				char attackerName[64];
+				char victimName[64];
+				GetClientName(attacker, attackerName, sizeof(attackerName));
+				GetClientName(victim, victimName, sizeof(victimName));
+				LogError("Accuracy: attacker(%s) victim(%s) inflictor(%i) weapon(%i) defid(%i)", attackerName, victimName, inflictor, weapon, defid);
+			}
+		}
+		// ---- ACCURACY ----
+	}
+	
+	return Plugin_Continue;
+}
+
+bool GetWeaponLogName(char[] logname, int lognameLen, int attacker, int weapon, int &healing, int &defid, bool &postHumousDamage, int inflictor = -1) {
+	defid = -1;
+	if (IsValidEntity(weapon))
+		defid = GetEntProp(weapon, Prop_Send, "m_iItemDefinitionIndex");
+	//PrintToChatAll("attacker(%i) weapon(%i) inflictor(%i) defid(%i)", attacker, weapon, inflictor, defid);
+	
+	if (defid == -1) {
+		// Weapon was -1. It is probably a sentry shooting.
+		if (inflictor > MaxClients && IsValidEntity(inflictor)) {
+			int sentry = inflictor;
+			GetEntityClassname(sentry, logname, lognameLen);
+			if (StrEqual(logname, "tf_projectile_sentryrocket")) {
+				// A sentry rocket hurt the victim. Find the sentry entity, and consider that the inflictor.
+				sentry = GetEntPropEnt(sentry, Prop_Send, "m_hOwnerEntity");
+				GetEntityClassname(sentry, logname, lognameLen);
+			}
+			
+			if (StrEqual(logname, "obj_sentrygun")) {
+				// Match the "killed" logs
+				// - Level 1: obj_sentrygun
+				// - Level 2: obj_sentrygun2
+				// - Level 3: obj_sentrygun3
+				// - Minisentry: obj_minisentry
+				// - Wrangler: wrangler_kill
+				
+				int shield = GetEntProp(sentry, Prop_Send, "m_nShieldLevel");
+				if (shield != 0) {
+					// Wrangler is used (valid for sentries of all levels, and mini sentries)
+					strcopy(logname, lognameLen, "wrangler_kill");
+				} else if (GetEntProp(sentry, Prop_Send, "m_bMiniBuilding", 1)) {
+					// It is a mini non-wrangled sentry
+					strcopy(logname, lognameLen, "obj_minisentry");
+				} else {
+					// It is a non-wrangled normal sentry
+					int sentryLevel = GetEntProp(sentry, Prop_Send, "m_iUpgradeLevel");
+					if (sentryLevel != 1) {
+						logname[13] = '0' + sentryLevel;
+						logname[14] = '\0';
+					}
+				}
+				
+				return true;
+			}
+		}
+	} else if (inflictor >= 1 && inflictor <= MaxClients) {
+		// Hitscan / melee
+		
+		bool res = WeaponFromDefid(defid, logname, lognameLen, healing, postHumousDamage);
+		 
+		TFClassType attackerClass = TF2_GetPlayerClass(attacker);
+		
+		if (StrEqual(logname, "shotgun") || StrEqual(logname, "shotgun_primary")) {		
+			// Upgradable shotgun - it has the same name for all classes in items_game.txt, but not in logs.
+			if (attackerClass == TFClass_Soldier) {
+				strcopy(logname, lognameLen, "shotgun_soldier");
+			} else if (attackerClass == TFClass_Pyro) {
+				strcopy(logname, lognameLen, "shotgun_pyro");
+			} else if (attackerClass == TFClass_Heavy) {
+				strcopy(logname, lognameLen, "shotgun_hwg");
+			} else { // Engy
+				strcopy(logname, lognameLen, "shotgun_primary");
+			}
+			res = true;
+		} else if (StrEqual(logname, "pistol")) {
+			// Upgradable pistol - it has the same name for all classes in items_game.txt, but not in logs.
+			if (attackerClass == TFClass_Scout) {
+				strcopy(logname, lognameLen, "pistol_scout");
+			} else { // Engy
+				strcopy(logname, lognameLen, "pistol");
+			}
+			res = true;
+		}
+		
+		return res;
+	} else if ((defid <= 30 /*standard weapons*/ || defid == 56 /*huntsman*/ || (defid >= 190 && defid <= 212 /*named standard weapons*/)) && inflictor > MaxClients && IsValidEntity(inflictor)) {
+		// Projectiles from standard weapons + huntsman. These are named after the projectile.
+		GetEntityClassname(inflictor, logname, lognameLen);
+		
+		if (StrContains(logname, "tf_weapon_") == 0)
+			strcopy(logname, lognameLen, logname[10]);
+		
+		return true;
+	} else {
+		// Projectiles from non-standard weapons. These are named after the weapon.
+		return WeaponFromDefid(defid, logname, lognameLen, healing, postHumousDamage);
+	}
+	
+	return false;
+}
+
+int FindStickySpot(int client, int inflictor, bool mayCreate = false) {
+	int emptyStickyPos = -1, foundStickyPos = -1;
+	for (int i = 0; i < MAXSTICKIES; i++) {
+		if (g_iStickyId[client][i] == inflictor) {
+			foundStickyPos = i;
+			break;
+		}
+		if (emptyStickyPos == -1 && g_iStickyId[client][i] == 0)
+			emptyStickyPos = i;
+	}
+	
+	if (foundStickyPos == -1 && mayCreate) {
+		if (emptyStickyPos == -1) {
+			LogError("Could not find empty sticky pos for player %i", client);
+		} else {
+			foundStickyPos = emptyStickyPos;
+			g_bStickyHurtMe[client][foundStickyPos] = false; // no need - it is set below
+			g_bStickyHurtEnemy[client][foundStickyPos] = false;
+			g_iStickyId[client][foundStickyPos] = inflictor;
+		}
+	}
+	
+	return foundStickyPos;
+}
+
+void SetLastAirshotValues(int attacker, int victim) {
+	if ((GetEntityFlags(victim) & (FL_ONGROUND | FL_INWATER)) == 0) {
+		// The victim is in the air
+		float distance = DistanceAboveGroundBox(victim);
+		if (distance >= 170.0) {
+			lastAirshot[attacker] = true;
+			lastAirshotHeight[attacker] = RoundToFloor(distance);
+		}
+	}
+}
+
+const int WEPCACHESIZE = 50;
+const int MAXDEFID = 2048;
+int g_iCachedWeaponBucket[MAXDEFID+1];
+int g_iCachedWeaponDefid[WEPCACHESIZE];
+int g_iCachedWeaponTime[WEPCACHESIZE];
+char g_sCachedWeaponName[WEPCACHESIZE][MAXWEPNAMELEN];
+int g_iCachedWeaponHealing[WEPCACHESIZE];
+bool g_bCachedWeaponPostHumousDamage[WEPCACHESIZE];
+int g_iCachedWeaponLength = 0;
+
+void InitWeaponCache() {
+	g_iCachedWeaponLength = 0;
+	Array_Fill(g_iCachedWeaponBucket, sizeof(g_iCachedWeaponBucket), -1);
+	Array_Fill(g_iCachedWeaponDefid, sizeof(g_iCachedWeaponDefid), -1);
+}
+
+bool WeaponFromDefid(int defid, char[] name, int maxlen, int &healing, bool &postHumousDamage) {
+	if (defid <= MAXDEFID) {
+		int bucket = g_iCachedWeaponBucket[defid];
+		if (bucket != -1) {
+			g_iCachedWeaponTime[bucket] = GetTime(); // I benchmarked GetTime(). On my computer it can run roughly 10,000,000 times per second. That is 18,000,000,000 per 30 minutes. In a normal match there are around 2,500 damage log lines.
+			strcopy(name, maxlen, g_sCachedWeaponName[bucket]);
+			healing = g_iCachedWeaponHealing[bucket];
+			postHumousDamage = g_bCachedWeaponPostHumousDamage[bucket];
+			return true;
+		}
+	} else {
+		for (int i = 0; i < g_iCachedWeaponLength; i++) {
+			if (g_iCachedWeaponDefid[i] == defid) {
+				g_iCachedWeaponTime[i] = GetTime();
+				strcopy(name, maxlen, g_sCachedWeaponName[i]);
+				healing = g_iCachedWeaponHealing[i];
+				postHumousDamage = g_bCachedWeaponPostHumousDamage[i];
+				return true;
+			}
+		}
+	}
+	
+	//LogToGame2("[WeaponFromDefid] Cache miss: %i", defid);
+	
+	for (int i = 0; i < g_iAllWeaponsCount; i++) {
+		if (g_iAllWeaponsDefid[i] == defid) {
+			g_hAllWeaponsName.GetString(i, name, maxlen);
+			healing = g_iAllWeaponsHealingOnHit[i];
+			postHumousDamage = g_bAllWeaponsPostHumousDamage[i];
+			
+			int insertAt = -1;
+			int time = GetTime();
+			if (g_iCachedWeaponLength < WEPCACHESIZE) {
+				insertAt = g_iCachedWeaponLength;
+				g_iCachedWeaponLength++;
+			} else {
+				int minTime = time + 1;
+				for (int j = 0; j < g_iCachedWeaponLength; j++) {
+					if (g_iCachedWeaponTime[j] < minTime) {
+						minTime = g_iCachedWeaponTime[j];
+						insertAt = j;
+					}
+				}
+				
+				if (g_iCachedWeaponDefid[insertAt] <= MAXDEFID)
+					g_iCachedWeaponBucket[g_iCachedWeaponDefid[insertAt]] = -1;
+			}
+			
+			g_iCachedWeaponDefid[insertAt] = defid;
+			strcopy(g_sCachedWeaponName[insertAt], MAXWEPNAMELEN, name);
+			g_iCachedWeaponHealing[insertAt] = healing;
+			g_bCachedWeaponPostHumousDamage[insertAt] = postHumousDamage;
+			if (defid <= MAXDEFID)
+				g_iCachedWeaponBucket[defid] = insertAt;
+			
+			return true;
+		}
+	}
+	
+	return false;
+}
+
+void ImportWeaponDefinitions() {
+	g_hAllWeaponsName = CreateArray(MAXWEPNAMELEN);
+	g_iAllWeaponsCount = 0;
+	g_iSlotWeaponCount = 0;
+	if (!FileExists(ITEMS_TXT_PATH, true))
+		SetFailState("Could not find items_game.txt: %s", ITEMS_TXT_PATH);
+	
+	// Load items_game.txt for prefabs
+	g_kvPrefabs = KvizCreateFromFile("items_game", ITEMS_TXT_PATH);
+	if (g_kvPrefabs == null)
+		SetFailState("Could not load items_game.txt");
+	
+	// Go to prefabs section
+	if (!KvizJumpToKey(g_kvPrefabs, false, "prefabs"))
+		SetFailState("items_game.txt: '%s' key not found", "prefabs");
+	
+	// Load items_game.txt for items traversal
+	g_kvItems = KvizCreateFromFile("items_game", ITEMS_TXT_PATH);
+	if (g_kvItems == null)
+		SetFailState("Could not load items_game.txt");
+	
+	// Go to items section
+	if (!KvizJumpToKey(g_kvItems, false, "items"))
+		SetFailState("items_game.txt: '%s' key not found", "items");
+	
+	// To avoid script execution timeout, we need to import small chunks at a time
+	CreateTimer(0.1, ImportWeaponDefinitionsChunk, 1);
+}
+
+float DistanceAboveGroundBox(int victim) {
+	float vStart[3];
+	float vDirection[3] = { 0.0, 0.0, -16384.0 };
+	float vHullMins[3]  = { -24.0, -24.0, 0.0 };
+	float vHullMaxs[3]  = { 24.0, 24.0, 0.0 };
+	
+	GetClientAbsOrigin(victim, vStart);
+	float vEnd[3];
+	AddVectors(vDirection, vStart, vEnd);
+
+	Handle trace = TR_TraceHullFilterEx(vStart, vEnd, vHullMins, vHullMaxs, MASK_PLAYERSOLID, TraceEntityFilterPlayer);
+	
+	float distance = -1.0;
+	if (TR_DidHit(trace)) {
+		TR_GetEndPosition(vEnd, trace);
+		distance = GetVectorDistance(vStart, vEnd, false);
+	} else {
+		LogError("trace error. victim %N(%d)", victim, victim);
+	}
+	
+	delete trace;
+	return distance;
+}
+
+
+public Action ImportWeaponDefinitionsChunk(Handle timer, int startId) {
+	const int chunkSize = 500;
+	int itemId = startId;
+	int lastId = startId + (chunkSize - 1);
+
+	for (; itemId <= lastId && KvizJumpToKey(g_kvItems, false, ":nth-child(%i)", itemId); KvizGoBack(g_kvItems), itemId++) {
+		// Get the item defid
+		int defid;
+		if (!KvizGetNumExact(g_kvItems, defid, ":section-name"))
+			continue;
+		
+		//if (KvizExist(g_kvItems, ":nth-child(%i).item_paintkit", itemId)) {
+		//	char prefab[64];
+		//	if (KvizGetStringExact(g_kvItems, ":nth-child(%i).prefab", itemId)) {
+		//		
+		//	}
+		//}
+		
+		// Check if it is a stock weapon or a named stock weapon
+		bool isStockWeapon = defid <= 30;
+		bool isUpgradableStockWeapon = (defid >= 190 && defid <= 212);
+		
+		// Get the craft class
+		char craftclass[32];
+		GetItemString(g_kvItems, g_kvPrefabs, "craft_class", craftclass, sizeof(craftclass), "");
+		
+		// Get the slot for the item
+		char itemslot[32];
+		GetItemString(g_kvItems, g_kvPrefabs, "item_slot", itemslot, sizeof(itemslot));
+		int slot = -1;
+		if (StrEqual(itemslot, "primary", false))
+			slot = 0;
+		else if (StrEqual(itemslot, "secondary", false))
+			slot = 1;
+		else if (StrEqual(itemslot, "melee", false))
+			slot = 2;
+		else if (StrEqual(itemslot, "pda", false))
+			slot = 3;
+		else if (StrEqual(itemslot, "pda2", false))
+			slot = 4;
+		else if (StrEqual(itemslot, "head", false))
+			slot = 5;
+		else if (StrEqual(itemslot, "misc", false))
+			slot = 6;
+		else if (StrEqual(itemslot, "action", false))
+			slot = 7;
+		
+		// Get the item class
+		char itemclass[MAXITEMCLASSLEN];
+		GetItemString(g_kvItems, g_kvPrefabs, "item_class", itemclass, sizeof(itemclass));
+		
+		// Check if the item is a weapon
+		bool isWeapon = (slot >= 0 && slot <= 4) && (StrEqual(craftclass, "weapon", false) == true || StrEqual(craftclass, "", false) == true);
+		
+		// Check if the item is a hat
+		bool isHat = (slot == 5 || slot == 6) && (StrEqual(itemclass, "tf_wearable_item", false) == true);
+		
+		// Check if the item is a medigun
+		bool isMedigun = StrEqual(itemclass, "tf_weapon_medigun");
+		
+		// Save the slot (in case we want to replace the player's weapon later)
+		if (isWeapon || isHat) {
+			if (g_iSlotWeaponCount >= MAXWEAPONS)
+				SetFailState("Too many weapons. (%i)", g_iSlotWeaponCount);
+			
+			int pos = g_iSlotWeaponCount - 1;
+			
+			// Insert slot & defid using insertion sort
+			while (pos >= 0 && g_iSlotWeaponDefid[pos] > defid) {
+				g_iSlotWeaponDefid[pos + 1] = g_iSlotWeaponDefid[pos];
+				g_iSlotWeaponSlot[pos + 1] = g_iSlotWeaponSlot[pos];
+				
+				pos--;
+			}
+			g_iSlotWeaponDefid[pos + 1] = defid;
+			g_iSlotWeaponSlot[pos + 1] = slot;
+			
+			g_iSlotWeaponCount++;
+		}
+		
+		// Save the weapon and corresponding defid if it's not a stock weapon
+		if (isWeapon) {
+			if (g_iAllWeaponsCount >= MAXWEAPONS)
+				SetFailState("Too many weapons. (%i)", g_iAllWeaponsCount);
+			
+			char itemname[MAXWEPNAMELEN] = "";
+			
+			if (defid == 130) {
+				strcopy(itemname, sizeof(itemname), "sticky_resistance"); // Scottish Resistance has the wrong name in items_game.txt
+			} else if (defid == 35) {
+				strcopy(itemname, sizeof(itemname), "kritzkrieg");
+			} else if (defid == 411) {
+				strcopy(itemname, sizeof(itemname), "quickfix");
+			} else if (defid == 998) {
+				strcopy(itemname, sizeof(itemname), "vaccinator");
+			} else if (isMedigun) {
+				// It is some other medigun. As of this writing, the only other possibility is a normal medigun (or skin of it). /F2, 21-10-2015
+				GetItemString(g_kvItems, g_kvPrefabs, "name", itemname, sizeof(itemname));
+				strcopy(itemname, sizeof(itemname), "medigun");
+			} else {
+				GetItemString(g_kvItems, g_kvPrefabs, "item_logname", itemname, sizeof(itemname));
+				if (StrEqual(itemname, "")) {
+					if (isStockWeapon || isUpgradableStockWeapon || isMedigun)
+						GetItemString(g_kvItems, g_kvPrefabs, "name", itemname, sizeof(itemname));
+					
+					if (!StrEqual(itemname, "")) {
+						if (F2_String_StartsWith(itemname, "Upgradeable ", false))
+							strcopy(itemname, sizeof(itemname), itemname[12]);
+						if (F2_String_StartsWith(itemname, "tf_weapon_", false))
+							strcopy(itemname, sizeof(itemname), itemname[10]);
+					} else {
+						GetItemString(g_kvItems, g_kvPrefabs, "item_class", itemname, sizeof(itemname));
+					}
+					
+					if (!StrEqual(itemname, "")) {
+						if (F2_String_StartsWith(itemname, "tf_weapon_", false))
+							strcopy(itemname, sizeof(itemname), itemname[10]);
+						if (StrEqual(itemname, "rocketlauncher", false))
+							strcopy(itemname, sizeof(itemname), "tf_projectile_rocket");
+						else if (StrEqual(itemname, "pipebomblauncher", false))
+							strcopy(itemname, sizeof(itemname), "tf_projectile_pipe_remote");
+						else if (StrEqual(itemname, "grenadelauncher", false))
+							strcopy(itemname, sizeof(itemname), "tf_projectile_pipe");
+					}
+				}
+			}
+			
+			if (StrEqual(itemname, ""))
+				Format(itemname, sizeof(itemname), "unknown(%i)", defid);
+			
+			String_ToLower(itemname, itemname, sizeof(itemname));
+
+			PushArrayString(g_hAllWeaponsName, itemname);
+			g_iAllWeaponsDefid[g_iAllWeaponsCount] = defid;
+			g_iAllWeaponsHealingOnHit[g_iAllWeaponsCount] = 0;
+			char attr[16];
+			if (GetItemAttribute(g_kvItems, g_kvPrefabs, "add_onhit_addhealth", attr, sizeof(attr)) || GetItemAttribute(g_kvItems, g_kvPrefabs, "add_health_on_radius_damage", attr, sizeof(attr))) {
+				//PrintToChatAll("health on hit(%i) name(%s)", attr, itemname);
+				g_iAllWeaponsHealingOnHit[g_iAllWeaponsCount] = StringToInt(attr);
+			}
+			g_bAllWeaponsPostHumousDamage[g_iAllWeaponsCount] = GetItemTag(g_kvItems, g_kvPrefabs, "can_deal_posthumous_damage", false);
+			g_iAllWeaponsCount++;
+		
+		}
+	}
+
+	if (itemId > lastId) {
+		CreateTimer(0.1, ImportWeaponDefinitionsChunk, itemId);
+		return Plugin_Stop;
+	}
+
+	// Clean up
+	KvizGoBack(g_kvItems);
+	KvizGoBack(g_kvPrefabs);
+	
+	KvizClose(g_kvItems);
+	KvizClose(g_kvPrefabs);
+
+	g_kvItems = null;
+	g_kvPrefabs = null;
+	
+	InitWeaponCache();
+
+	FinalizePluginInitialization();
+
+	return Plugin_Stop;
+}
+
+void GetItemString(KeyValues kv, KeyValues kvPrefabs, const char[] key, char[] value, int valueLen, const char[] def = "") {
+	if (KvizGetString(kv, value, valueLen, "", key))
+		return;
+	
+	char prefabs[128];
+	KvizGetString(kv, prefabs, sizeof(prefabs), "", "prefab");
+	if (StrEqual(prefabs, "")) {
+		strcopy(value, valueLen, def);
+		return;
+	}
+	
+	int pos;
+	char prefab[64];
+	do {
+		pos = FindCharInString(prefabs, ' ', true);
+		if (pos == -1) {
+			strcopy(prefab, sizeof(prefab), prefabs);
+		} else {
+			strcopy(prefab, sizeof(prefab), prefabs[pos+1]);
+			prefabs[pos] = '\0';
+		}
+		
+		if (GetItemStringFromPrefab(kvPrefabs, prefab, key, value, valueLen))
+			return;
+	} while(pos != -1);
+	
+	strcopy(value, valueLen, def);
+}
+
+bool GetItemTag(KeyValues kv, KeyValues kvPrefabs, const char[] key, bool def = false) {
+	int ret;
+	if (KvizGetNumExact(kv, ret, "tags.%s", key))
+		return ret != 0;
+	
+	char prefabs[128];
+	KvizGetString(kv, prefabs, sizeof(prefabs), "", "prefab");
+	if (StrEqual(prefabs, ""))
+		return def;
+	
+	int pos;
+	char prefab[64];
+	do {
+		pos = FindCharInString(prefabs, ' ', true);
+		if (pos == -1) {
+			strcopy(prefab, sizeof(prefab), prefabs);
+		} else {
+			strcopy(prefab, sizeof(prefab), prefabs[pos+1]);
+			prefabs[pos] = '\0';
+		}
+		
+		if (KvizGetNumExact(kvPrefabs, ret, "%s.tags.%s", prefab, key))
+			return ret != 0;
+	} while (pos != -1);
+	
+	return def;
+}
+
+bool GetItemAttribute(KeyValues kv, KeyValues kvPrefabs, const char[] attr, char[] value, int valueLen) {
+	if (KvizGetStringExact(kv, value, valueLen, "attributes:any-child.attribute_class:has-value(%s):parent.value", attr))
+		return true;
+	
+	char prefabs[128];
+	KvizGetString(kv, prefabs, sizeof(prefabs), "", "prefab");
+	if (StrEqual(prefabs, ""))
+		return false;
+	
+	int pos;
+	char prefab[64];
+	do {
+		pos = FindCharInString(prefabs, ' ', true);
+		if (pos == -1) {
+			strcopy(prefab, sizeof(prefab), prefabs);
+		} else {
+			strcopy(prefab, sizeof(prefab), prefabs[pos+1]);
+			prefabs[pos] = '\0';
+		}
+		
+		if (KvizGetStringExact(kvPrefabs, value, valueLen, "%s.attributes:any-child.attribute_class:has-value(%s):parent.value", prefab, attr))
+			return true;
+	} while(pos != -1);
+	
+	return false;
+}
+
+bool GetItemStringFromPrefab(KeyValues kvPrefabs, const char[] prefab, const char[] key, char[] value, int valueLen) {
+	if (KvizGetStringExact(kvPrefabs, value, valueLen, "%s.%s", prefab, key))
+		return true;
+	
+	char prefabs[128];
+	KvizGetString(kvPrefabs, prefabs, sizeof(prefabs), "", "%s.prefab", prefab);
+	if (StrEqual(prefabs, ""))
+		return false;
+	
+	int pos;
+	char nextPrefab[64];
+	do {
+		pos = FindCharInString(prefabs, ' ', true);
+		if (pos == -1) {
+			strcopy(nextPrefab, sizeof(nextPrefab), prefabs);
+		} else {
+			strcopy(nextPrefab, sizeof(nextPrefab), prefabs[pos+1]);
+			prefabs[pos] = '\0';
+		}
+		
+		if (!StrEqual(nextPrefab, "paintkit_weapon", false)) {
+			if (GetItemStringFromPrefab(kvPrefabs, nextPrefab, key, value, valueLen))
+				return true;
+		}
+	} while(pos != -1);
+	
+	return false;
+}
+
+void FinalizePluginInitialization() {
+	AddGameLogHook(GameLog);
+	
+	for (int client = 1; client <= MaxClients; client++) {
+		if (IsClientInGame(client) && !IsClientSourceTV(client)) {
+			SDKHook(client, SDKHook_OnTakeDamage, OnTakeDamage);
+		}
+	}
+
+	g_bWeaponDataInitialized = true;
+
+	PrintToServer("supstats2 fully initialized");
+}
+
+public Action BlockLogLine(const char[] logline) {
+	if (g_bBlockLog && (g_sBlockLog[0] == '\0' || StrContains(logline, g_sBlockLog, false) != -1))
+		// If we don't use g_sBlockLog, then chargeready is sometimes blocked
+		return Plugin_Handled;
+	
+	return Plugin_Continue;
+}
+
+public Action GameLog(const char[] message) {
+	return BlockLogLine(message);
+}
+
+public Action TF2_CalcIsAttackCritical(int attacker, int weapon, char[] weaponname, bool &result) {
+    result = false;
+	if (!g_bEnableAccuracy)
+		return Plugin_Continue;
+	
+    int arena_index = g_iPlayerArena[attacker];
+    if (g_iArenaStatus[arena_index] != AS_FIGHT)
+    {
+        return Plugin_Continue;
+    }
+	if (attacker > 0 && attacker <= MaxClients) {
+		int healing;
+		int defid;
+		bool postHumousDamage;
+		int shotType;
+		if (g_tShotTypes.GetValue(weaponname, shotType)) {
+			char weap[64];
+			weap[0] = '\0';
+			GetWeaponLogName(weap, sizeof(weap), attacker, weapon, healing, defid, postHumousDamage, attacker); // We are setting inflictor = attacker
+			
+			if (shotType == SHOT_ROCKET) {
+				FormatShot(attacker, weap, g_sRocketFiredLogLine[attacker], sizeof(g_sRocketFiredLogLine[]));
+				g_bRocketHurtMe[attacker] = false;
+				g_bRocketHurtEnemy[attacker] = false;
+				CreateTimer(MAXROCKETJUMPTIME, LogRocketShot, attacker, TIMER_FLAG_NO_MAPCHANGE);
+			} else if (shotType == SHOT_PIPE || shotType == SHOT_NEEDLE || shotType == SHOT_HEALINGBOLT) {
+				LogShot(arena_index, attacker, weap);
+			} else if (shotType == SHOT_HITSCAN) {
+				bool sticky = false;
+				int aiment = GetClientAimTarget(attacker, false);
+				if (aiment >= 0 && IsValidEntity(aiment)) {
+					char aimentstr[64];
+					Entity_GetClassName(aiment, aimentstr, sizeof(aimentstr));
+					if (StrEqual(aimentstr, "tf_projectile_pipe_remote", false)) {
+						sticky = true;
+					}
+				}
+				
+				if (sticky) {
+					FormatShot(attacker, weap, g_sHitscanFiredLogLine[attacker], sizeof(g_sHitscanFiredLogLine[]));
+					g_bHitscanHurtEnemy[attacker] = false;
+					CreateTimer(MAXHITSCANTIME, LogHitscanShot, attacker, TIMER_FLAG_NO_MAPCHANGE);
+				} else {
+					LogShot(arena_index, attacker, weap);
+				}
+			}
+		}
+	}
+	
+	return Plugin_Handled;
+}
+
+public Action LogRocketShot(Handle timer, any client) {
+	if (!IsRealPlayer(client))
+		return Plugin_Stop;
+	
+	if (!g_bRocketHurtMe[client] || g_bRocketHurtEnemy[client]) {
+		LogToGame("%s", g_sRocketFiredLogLine[client]);
+	}
+	return Plugin_Stop;
+}
+
+void FormatShot(int attacker, const char[] weapon, char[] dest, int destlen) {
+	int attackerid = GetClientUserId(attacker);
+	char attackerName[MAX_NAME_LENGTH];
+	char attackerSteamID[64];
+	char attackerTeam[32];
+	
+	GetClientName(attacker, attackerName, sizeof(attackerName));
+	GetClientAuthStringNew(attacker, attackerSteamID, sizeof(attackerSteamID), false);
+	GetPlayerTeamStr(GetClientTeam(attacker), attackerTeam, sizeof(attackerTeam));
+	
+	Format(dest, destlen, 
+		"\"%s<%d><%s><%s>\" triggered \"shot_fired\" (weapon \"%s\")",
+		attackerName,
+		attackerid,
+		attackerSteamID,
+		attackerTeam,
+		weapon);
+}
+
+public Action LogHitscanShot(Handle timer, any client) {
+	if (!IsRealPlayer(client))
+		return Plugin_Stop;
+	
+	if (g_bHitscanHurtEnemy[client]) {
+		LogToGame("%s", g_sHitscanFiredLogLine[client]);
+	}
+	return Plugin_Stop;
+}
+
+void HurtFork(Event event, const char[] name)
+{
+	int victimid = event.GetInt("userid");
+	int victim = GetClientOfUserId(victimid);
+	int attackerid = event.GetInt("attacker");
+	int attacker = GetClientOfUserId(attackerid);
+	int damage = event.GetInt("damageamount");
+    int arena_index = g_iPlayerArena[victim];
+	
+	bool crit = event.GetBool("crit");
+	bool minicrit = event.GetBool("minicrit");
+	
+	if (victim != attacker && attacker != 0) {
+		char attackerName[MAX_NAME_LENGTH];
+		char attackerSteamID[64];
+		char attackerTeam[32];
+		char victimName[MAX_NAME_LENGTH];
+		char victimSteamID[64];
+		char victimTeam[32];
+		
+		GetClientName(attacker, attackerName, sizeof(attackerName));
+		GetClientAuthStringNew(attacker, attackerSteamID, sizeof(attackerSteamID), false);
+		GetPlayerTeamStr(GetClientTeam(attacker), attackerTeam, sizeof(attackerTeam));
+		
+		GetClientName(victim, victimName, sizeof(victimName));
+		GetClientAuthStringNew(victim, victimSteamID, sizeof(victimSteamID), false);
+		GetPlayerTeamStr(GetClientTeam(victim), victimTeam, sizeof(victimTeam));
+		
+		char strHealing[32] = "";
+		char strCrit[32] = "";
+		char strRealDamage[32] = "";
+		char strHeadshot[32] = "";
+		char strAirshot[64] = "";
+
+		int healing = lastHealingOnHit[attacker];
+		if (healing != 0 && IsPlayerAlive(attacker))
+			FormatEx(strHealing, sizeof(strHealing), " (healing \"%i\")", healing);
+		
+		if (minicrit)
+			strcopy(strCrit, sizeof(strCrit), " (crit \"mini\")");
+		else if (crit)
+			strcopy(strCrit, sizeof(strCrit), " (crit \"crit\")");
+		
+		// When a person with 20 health takes 50 damage, his health will be -30.
+		// So the real damage done is 50 + (-30) = 20.
+		int clienthealth = GetClientHealth(victim);
+		int realdamage = damage;
+		if (clienthealth < 0) {
+			realdamage += clienthealth;
+			FormatEx(strRealDamage, sizeof(strRealDamage), " (realdamage \"%i\")", realdamage);
+		}
+		
+		if (lastHeadshot[attacker])
+			strcopy(strHeadshot, sizeof(strHeadshot), " (headshot \"1\")");
+		
+		if (lastAirshot[attacker]) {
+			Format(strAirshot, sizeof(strAirshot), " (airshot \"1\") (height \"%i\")", lastAirshotHeight[attacker]);
+			lastAirshot[attacker] = false;
+		}
+
+		// Remember: The attacker can be dead!
+		
+        char log[256];
+		Format(log, sizeof(log), "\"%s<%d><%s><%s>\" triggered \"damage\" against \"%s<%d><%s><%s>\" (damage \"%d\")%s (weapon \"%s\")%s%s%s%s",
+			attackerName,
+			attackerid,
+			attackerSteamID,
+			attackerTeam,
+			victimName,
+			victimid,
+			victimSteamID,
+			victimTeam,
+			damage,
+			strRealDamage,
+			lastWeaponDamage[attacker],
+			strHealing,
+			strCrit,
+			strAirshot,
+			strHeadshot);
+        LogToArena(arena_index, log);
+	}
 }
