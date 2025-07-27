@@ -10,6 +10,7 @@ echo "📦 Updating system packages..."
 sudo apt update
 sudo apt upgrade -y
 
+sudo apt-get install libarchive-tools -y
 sudo apt install tmux -y
 
 # Create TF2 data directory

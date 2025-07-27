@@ -1,5 +1,5 @@
 wget https://github.com/eternalwill43/mgeconfig/archive/refs/heads/master.zip
-unzip mgeconfig-master
+bsdtar -xf master.zip --strip-components=1
 cd tf2-data/tf/
 wget https://github.com/sapphonie/MGEMod/releases/download/v3.0.9/mge.zip
 unzip -o mge.zip
@@ -18,6 +18,8 @@ wget https://github.com/F2/F2s-sourcemod-plugins/releases/download/20250725-1753
 unzip -o f2-sourcemod-plugins.zip
 cd ../scripting
 wget https://github.com/f2/F2s-sourcemod-plugins/archive/refs/heads/master.zip
-unzip master.zip "F2s-sourcemod-plugins-master/includes/*" -d ./include 
+unzip master.zip "F2s-sourcemod-plugins-master/includes/*" -d temp
+rsync -a temp/F2s-sourcemod-plugins-master/includes/ ./include/
+rm -rf temp
 chmod +x ./mkmge.sh
 ./mkmge.sh
