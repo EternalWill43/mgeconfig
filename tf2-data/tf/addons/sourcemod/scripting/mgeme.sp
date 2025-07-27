@@ -363,7 +363,7 @@ static const char stockSounds[][] =	 // Sounds that do not need to be downloaded
 		"vo/announcer_you_failed.wav"
 	};
 
-WebSocket ws;
+//WebSocket ws;
 
 public Plugin myinfo =
 {
