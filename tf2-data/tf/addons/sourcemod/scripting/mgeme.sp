@@ -521,11 +521,13 @@ public void
 		}
 	}
 	//(Websocket)
+	/*
 	ws = new WebSocket("ws://147.79.75.45:3000");
 	ws.Connect();
 	ws.SetReadCallback(WebSocket_JSON, wsReadCallback);
 	ws.SetConnectCallback(wsConnCallback);
 	ws.SetDisconnectCallback(wsDisconnectCallback);
+	*/
 
 	for (int i = 0; i < MAXARENAS; i++)
 	{
