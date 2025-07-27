@@ -529,10 +529,6 @@ public void
 	ws.SetDisconnectCallback(wsDisconnectCallback);
 	*/
 
-	for (int i = 0; i < MAXARENAS; i++)
-	{
-		g_ArenaLogs[i] = new ArrayList(512);
-	}
 	g_tShotTypes = CreateTrie();
 	g_tShotTypes.SetValue("tf_weapon_rocketlauncher", SHOT_ROCKET);
 	g_tShotTypes.SetValue("tf_weapon_particle_cannon", SHOT_ROCKET);
@@ -611,6 +607,11 @@ public void OnMapStart()
 	PrecacheModel(MODEL_POINT, true);
 
 	g_bNoStats	 = gcvar_stats.BoolValue ? false : true; /* Reset this variable, since it is forced to false during Event_WinPanel */
+
+	for (int i = 0; i < MAXARENAS; i++)
+	{
+		g_ArenaLogs[i] = new ArrayList(512);
+	}
 
 	// Spawns
 	bool isMapAm = LoadSpawnPoints();
