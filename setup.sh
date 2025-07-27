@@ -14,8 +14,11 @@ sudo apt install tmux -y
 
 # Create TF2 data directory
 echo "📁 Creating TF2 data directory..."
-mkdir -p tf2-data
+mkdir -p tf2-data/tf/maps
+mkdir -p tf2-data/tf/addons/sourcemod/scripting/include
 chown -R 1000:1000 ./tf2-data
+
+wget -P ./tf2-data/tf/maps/ https://fastdl.serveme.tf/maps/mge_training_v8_beta4b.bsp
 
 # Add i386 architecture for TF2 dependencies
 echo "🏗️ Adding i386 architecture and installing 32-bit libraries..."

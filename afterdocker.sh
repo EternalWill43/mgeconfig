@@ -1,5 +1,6 @@
+wget https://github.com/eternalwill43/mgeconfig/archive/refs/heads/master.zip
+unzip mgeconfig-master
 cd tf2-data/tf/
-git clone --depth 1 https://github.com/EternalWill43/mgeconfig.git temp && cp -r temp/* ./ && rm -rf temp
 wget https://github.com/sapphonie/MGEMod/releases/download/v3.0.9/mge.zip
 unzip -o mge.zip
 wget https://github.com/ldesgoui/tf2-comp-fixes/releases/download/v1.16.19/tf2-comp-fixes.zip
@@ -16,5 +17,7 @@ cd plugins
 wget https://github.com/F2/F2s-sourcemod-plugins/releases/download/20250725-1753439198523/f2-sourcemod-plugins.zip
 unzip -o f2-sourcemod-plugins.zip
 cd ../scripting
+wget https://github.com/f2/F2s-sourcemod-plugins/archive/refs/heads/master.zip
+unzip master.zip "F2s-sourcemod-plugins-master/includes/*" -d ./include 
 chmod +x ./mkmge.sh
 ./mkmge.sh
