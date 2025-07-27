@@ -3436,7 +3436,7 @@ Action Command_JoinClass(int client, int args)
 							if (g_iArenaStatus[arena_index] == AS_FIGHT && killer)
 							{
 								g_iArenaScore[arena_index][killer_team_slot] += 1;
-								UpdateScoreWS(arena_index);
+								//UpdateScoreWS(arena_index);
 								MC_PrintToChat(killer, "%t", "ClassChangePointOpponent");
 								MC_PrintToChat(client, "%t", "ClassChangePoint");
 
@@ -4460,7 +4460,7 @@ Action Event_PlayerDeath(Event event, const char[] name, bool dontBroadcast)
 	if (!g_bArenaBBall[arena_index] && !g_bArenaKoth[arena_index] && (!g_bFourPersonArena[arena_index] || (g_bFourPersonArena[arena_index] && !IsPlayerAlive(victim_teammate))))
 	{
 		g_iArenaScore[arena_index][killer_team_slot] += 1;
-		UpdateScoreWS(arena_index);
+		//UpdateScoreWS(arena_index);
 	}	 // Kills shouldn't give points in bball. Or if only 1 player in a two person arena dies
 
 	if (!g_bArenaEndif[arena_index])	// Endif does not need to display health, since it is one-shot kills.
@@ -4495,7 +4495,7 @@ Action Event_PlayerDeath(Event event, const char[] name, bool dontBroadcast)
 	if ((!g_bFourPersonArena[arena_index] && (g_bArenaAmmomod[arena_index] || g_bArenaMidair[arena_index])) || (g_bFourPersonArena[arena_index] && !IsPlayerAlive(victim_teammate) && !g_bArenaBBall[arena_index] && !g_bArenaKoth[arena_index]))
 	{
 		g_iArenaStatus[arena_index] = AS_AFTERFIGHT;
-		UpdateScoreWS(arena_index);
+		//UpdateScoreWS(arena_index);
 	}
 
 	if (g_iArenaStatus[arena_index] >= AS_FIGHT && g_iArenaStatus[arena_index] < AS_REPORTED && fraglimit > 0 && g_iArenaScore[arena_index][killer_team_slot] >= fraglimit)
@@ -4532,7 +4532,7 @@ Action Event_PlayerDeath(Event event, const char[] name, bool dontBroadcast)
 		LogToArena(arena_index, intermission_win_limit);
 		g_iArenaStatus[arena_index] = AS_REPORTED;
 		DumpArenaLogs(arena_index);
-		UpdateScoreWS(arena_index);
+		//UpdateScoreWS(arena_index);
 		char killer_name[128];
 		char victim_name[128];
 		GetClientName(killer, killer_name, sizeof(killer_name));
@@ -5296,7 +5296,7 @@ Action Timer_StartDuel(Handle timer, any arena_index)
 
 	g_iArenaScore[arena_index][SLOT_ONE] = 0;
 	g_iArenaScore[arena_index][SLOT_TWO] = 0;
-	UpdateScoreWS(arena_index);
+	//UpdateScoreWS(arena_index);
 	ShowPlayerHud(g_iArenaQueue[arena_index][SLOT_ONE]);
 	ShowPlayerHud(g_iArenaQueue[arena_index][SLOT_TWO]);
 
@@ -6370,6 +6370,7 @@ void UpdateArenaName(int arena)
 	LogMessage("Arena %s updated to %s", g_sArenaOriginalName[arena], g_sArenaName[arena]);
 }
 
+/*
 public void UpdateScoreWS(int arena_index)
 {
 	JSONObject msg = new JSONObject();
@@ -6524,6 +6525,7 @@ public Action Timer_ConnectToMGEME(Handle timer, int data)
 	ws.Connect();
 	return Plugin_Continue;
 }
+*/
 
 void DumpArenaLogs(int arenaIndex)
 {
