@@ -20,6 +20,8 @@ mkdir -p tf2-data/tf/addons/sourcemod/scripting/include
 chown -R 1000:1000 ./tf2-data
 
 wget -P ./tf2-data/tf/maps/ https://fastdl.serveme.tf/maps/mge_training_v8_beta4b.bsp
+wget -P ./tf2-data/tf/maps/ https://fastdl.serveme.tf/maps/mge_chillypunch_final4_fix2.bsp
+wget -P ./tf2-data/tf/maps/ https://fastdl.serveme.tf/maps/mge_worldchampionship_v3.bsp
 
 # Add i386 architecture for TF2 dependencies
 echo "🏗️ Adding i386 architecture and installing 32-bit libraries..."
