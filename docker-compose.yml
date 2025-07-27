@@ -1,0 +1,25 @@
+services:
+  tf2:
+    stdin_open: true
+    tty: true
+    network_mode: host
+    volumes:
+      - ./tf2-data:/home/steam/tf-dedicated
+    container_name: tf2-dedicated
+    environment:
+      SRCDS_TOKEN: ${SRCDS_TOKEN}
+      SRCDS_PW: ${SRCDS_PW}
+      SRCDS_RCONPW: ${SRCDS_RCONPW}
+      SRCDS_PORT: ${SRCDS_PORT}
+      SRCDS_TV_PORT: ${SRCDS_TV_PORT}
+      SRCDS_IP: ${SRCDS_IP}
+      SRCDS_FPSMAX: ${SRCDS_FPSMAX}
+      SRCDS_TICKRATE: ${SRCDS_TICKRATE}
+      SRCDS_MAXPLAYERS: ${SRCDS_MAXPLAYERS}
+      SRCDS_REGION: ${SRCDS_REGION}
+      SRCDS_STARTMAP: ${SRCDS_STARTMAP}
+      SRCDS_HOSTNAME: ${SRCDS_HOSTNAME}
+      SRCDS_CFG: ${SRCDS_CFG}
+      SRCDS_MAPCYCLE: ${SRCDS_MAPCYCLE}
+      SRCDS_SECURED: ${SRCDS_SECURED}
+    image: cm2network/tf2:sourcemod
