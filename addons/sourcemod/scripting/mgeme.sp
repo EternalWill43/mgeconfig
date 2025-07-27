@@ -693,6 +693,14 @@ public void OnMapEnd()
 
     RemoveNormalSoundHook(sound_hook);
 
+    for (int i = 0; i < MAXARENAS; i++)
+    {
+        if (g_ArenaLogs[i] != null)
+        {
+            delete g_ArenaLogs[i];
+        }
+    }
+
     for (int arena_index = 1; arena_index < g_iArenaCount; arena_index++)
     {
         if (g_bTimerRunning[arena_index])
